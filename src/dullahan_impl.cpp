@@ -37,7 +37,6 @@
 #include "include/cef_request_context.h"
 #include "include/cef_request_context_handler.h"
 #include "include/cef_waitable_event.h"
-#include "include/cef_web_plugin.h"
 #include "include/base/cef_logging.h"
 
 #include "dullahan_version.h"
@@ -58,7 +57,7 @@
 
 dullahan_impl::dullahan_impl() :
     mInitialized(false),
-    mBrowser(0),
+    mBrowser(nullptr),
     mCallbackManager(new dullahan_callback_manager),
     mViewWidth(0),
     mViewHeight(0),
@@ -68,13 +67,14 @@ dullahan_impl::dullahan_impl() :
     mForceWaveAudio(false),
     mDisableGPU(true),
     mDisableWebSecurity(false),
+    mAllowFileAccessFromFiles(false),
     mDisableNetworkService(false),
     mUseMockKeyChain(false),
     mAutoPlayWithoutGesture(false),
     mFakeUIForMediaStream(false),
     mFlipPixelsY(false),
     mFlipMouseY(false),
-    mRequestContext(0),
+    mRequestContext(nullptr),
     mRequestedPageZoom(1.0)
 {
     DLNOUT("dullahan_impl::dullahan_impl()");
@@ -124,6 +124,11 @@ void dullahan_impl::OnBeforeCommandLineProcessing(const CefString& process_type,
             command_line->AppendSwitch("disable-web-security");
         }
 
+        if (mAllowFileAccessFromFiles)
+        {
+            command_line->AppendSwitch("allow-file-access-from-files");
+        }
+
         if (mDisableNetworkService)
         {
             command_line->AppendSwitchWithValue("disable-features", "NetworkService");
@@ -160,7 +165,7 @@ std::string convert_wide_to_string(const wchar_t* in, unsigned int code_page)
     std::string out;
     if (in)
     {
-        int len_in = wcslen(in);
+        int len_in = (int)wcslen(in);
         int len_out = WideCharToMultiByte(
             code_page,
             0,
@@ -278,7 +283,8 @@ bool dullahan_impl::initCEF(dullahan::dullahan_settings& user_settings)
     settings.persist_session_cookies = false;
 
     // turn on only for Windows 7+
-    CefEnableHighDPISupport();
+    // No longer supported: https://bitbucket.org/chromiumembedded/cef/commits/f3b570cf8e3a633f585f5a9cd19c6f7fff42266e
+    //CefEnableHighDPISupport();
 
     // explicitly set the path to the locales folder since defaults no longer work on some systems
     CefString(&settings.locales_dir_path) = user_settings.locales_dir_path;
@@ -352,6 +358,11 @@ bool dullahan_impl::initCEF(dullahan::dullahan_settings& user_settings)
     // needing a web server.
     mDisableWebSecurity = user_settings.disable_web_security;
 
+    // This allows access to URLs in the local file system and used to be a component of 
+    // CefBrowserSettings. For version 112, this setting is applied via the command line
+    // parameter interface - we record it here from consumer settings and set later on.
+    mAllowFileAccessFromFiles = user_settings.file_access_from_file_urls;
+
     // this flag if set, adds a command line parameter that disables "network service" and
     // is like adding --disable-features=NetworkService. This appears to be required after
     // Chrome 75 to disable the "Chrome wants access to passwords" dialog on macOS that
@@ -410,10 +421,16 @@ bool dullahan_impl::init(dullahan::dullahan_settings& user_settings)
     browser_settings.windowless_frame_rate = user_settings.frame_rate;
     browser_settings.webgl = user_settings.webgl_enabled ? STATE_ENABLED : STATE_DISABLED;
     browser_settings.javascript = user_settings.javascript_enabled ? STATE_ENABLED : STATE_DISABLED;
-    browser_settings.plugins = user_settings.plugins_enabled ? STATE_ENABLED : STATE_DISABLED;
-    browser_settings.application_cache = user_settings.cache_enabled ? STATE_ENABLED : STATE_DISABLED;
+
+    // No more plugins!
+    //browser_settings.plugins = user_settings.plugins_enabled ? STATE_ENABLED : STATE_DISABLED;
+    
+    // Feature is deprecated: https://bitbucket.org/chromiumembedded/cef/commits/370a7749e950ef6784c29a666d07a0b67148dd5f
+    //browser_settings.application_cache = user_settings.cache_enabled ? STATE_ENABLED : STATE_DISABLED;
     browser_settings.background_color = user_settings.background_color;
-    browser_settings.file_access_from_file_urls = user_settings.file_access_from_file_urls ? STATE_ENABLED : STATE_DISABLED;
+
+    // Setting moved to gobal scope via command line processing: https://bitbucket.org/chromiumembedded/cef/commits/370a7749e950ef6784c29a666d07a0b67148dd5f
+    //browser_settings.file_access_from_file_urls = user_settings.file_access_from_file_urls ? STATE_ENABLED : STATE_DISABLED;
     browser_settings.image_shrink_standalone_to_fit = user_settings.image_shrink_standalone_to_fit ? STATE_ENABLED : STATE_DISABLED;
 
     mRenderHandler = new dullahan_render_handler(this);
@@ -454,10 +471,9 @@ bool dullahan_impl::init(dullahan::dullahan_settings& user_settings)
     CefWindowInfo window_info;
     window_info.SetAsWindowless(0);
     window_info.windowless_rendering_enabled = true;
-    window_info.x = 0;
-    window_info.y = 0;
-    window_info.width = user_settings.initial_width;
-    window_info.height = user_settings.initial_height;
+    const int initial_width = user_settings.initial_width;
+    const int initial_height = user_settings.initial_height;
+    window_info.bounds = { 0, 0, initial_width, initial_height };
 
     mBrowser = CefBrowserHost::CreateBrowserSync(window_info, mBrowserClient.get(), url, browser_settings, extra_info, mRequestContext.get());
 
@@ -645,7 +661,7 @@ void dullahan_impl::setFocus()
 {
     if (mBrowser.get() && mBrowser->GetHost())
     {
-        mBrowser->GetHost()->SendFocusEvent(true);
+        mBrowser->GetHost()->SetFocus(true);
     }
 }
 
@@ -745,10 +761,7 @@ void dullahan_impl::showDevTools()
     if (mBrowser.get() && mBrowser->GetHost())
     {
         CefWindowInfo window_info;
-        window_info.x = 0;
-        window_info.y = 0;
-        window_info.width = 400;
-        window_info.height = 400;
+        window_info.bounds = {0, 0, 600, 800};
 #ifdef WIN32
         window_info.SetAsPopup(nullptr, "Dullahan Dev Tools");
 #elif __APPLE__
@@ -775,9 +788,9 @@ void dullahan_impl::printToPDF(const std::string path)
     if (mBrowser.get() && mBrowser->GetHost())
     {
         CefPdfPrintSettings settings;
-        settings.backgrounds_enabled = true;
+        settings.print_background = true;
         settings.landscape = true;
-        settings.header_footer_enabled = true;
+        settings.display_header_footer = true;
         CefRefPtr<CefPdfPrintCallback> callback = this;
         mBrowser->GetHost()->PrintToPDF(path, settings, callback);
     }
@@ -814,11 +827,8 @@ bool dullahan_impl::setCookie(const std::string url, const std::string name,
         cookie.httponly = httponly;
         cookie.secure = secure;
 
-        cookie.has_expires = true;
-        cookie.expires.year = 2064;
-        cookie.expires.month = 4;
-        cookie.expires.day_of_week = 5;
-        cookie.expires.day_of_month = 10;
+        // Not clear how to set expires date in v 112 - was set far in the future in v91 anyway so this is okay for now.
+        cookie.has_expires = false;
 
         // wait for cookie to be set in setCookie callback
         class setCookieCallback :

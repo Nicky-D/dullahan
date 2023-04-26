@@ -83,7 +83,7 @@ class BrowserClient :
     public CefLifeSpanHandler
 {
     public:
-        BrowserClient(RenderHandler* render_handler) :
+        BrowserClient(scoped_refptr<RenderHandler> render_handler) :
             render_handler_(render_handler)
         {
         }
@@ -146,8 +146,6 @@ class CefMinimal : public CefApp
             CefSettings settings;
             settings.multi_threaded_message_loop = false;
             settings.windowless_rendering_enabled = true;
-
-            CefEnableHighDPISupport();
 
             CefMainArgs args(GetModuleHandle(nullptr));
 
@@ -232,7 +230,7 @@ class CefMinimal : public CefApp
 int main(int argc, char* argv[])
 {
     CefMainArgs main_args(GetModuleHandle(NULL));
-    int exit_code = CefExecuteProcess(main_args, NULL, nullptr);
+    int exit_code = CefExecuteProcess(main_args, nullptr, nullptr);
     if (exit_code >= 0)
     {
         return exit_code;
